@@ -1,3 +1,6 @@
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
 # Backup and Restore
 
 ## Database
@@ -12,7 +15,10 @@ Refer to the official [postgres documentation](https://www.postgresql.org/docs/c
 
 The recommended way to backup and restore the Immich database is to use the `pg_dumpall` command.
 
-```bash title='Backup'
+<Tabs>
+  <TabItem value="Linux system based Backup" label="Linux system based Backup" default>
+
+```bash 
 docker exec -t immich_postgres pg_dumpall -c -U postgres | gzip > "/path/to/backup/dump.sql.gz"
 ```
 
@@ -25,6 +31,25 @@ sleep 10    # Wait for Postgres server to start up
 gunzip < "/path/to/backup/dump.sql.gz" | docker exec -i immich_postgres psql -U postgres -d immich    # Restore Backup
 docker compose up -d    # Start remainder of Immich apps
 ```
+
+</TabItem>
+  <TabItem value="Windows system based Backup" label="Windows system based Backup">
+
+  ```bash 
+docker exec -t immich_postgres pg_dumpall -c -U postgres > "\path\to\backup\dump.sql"
+```
+
+```bash title='Restore'
+docker compose down -v  # CAUTION! Deletes all Immich data to start from scratch.
+docker compose pull     # Update to latest version of Immich (if desired)
+docker compose create   # Create Docker containers for Immich apps without running them.
+docker start immich_postgres    # Start Postgres server
+sleep 10    # Wait for Postgres server to start up
+gc "C:\path\to\backup\dump.sql" | docker exec -i immich_postgres psql -U postgres -d immich    # Restore Backup
+docker compose up -d    # Start remainder of Immich apps
+```
+  </TabItem>
+</Tabs>
 
 Note that for the database restore to proceed properly, it requires a completely fresh install (i.e. the Immich server has never run since creating the Docker containers). If the Immich app has run, Postgres conflicts may be encountered upon database restoration (relation already exists, violated foreign key constraints, multiple primary keys, etc.).
 
@@ -62,8 +87,12 @@ gunzip < db_dumps/last/immich-latest.sql.gz | docker exec -i immich_postgres psq
 Immich stores two types of content in the filesystem: (1) original, unmodified content, and (2) generated content. Only the original content needs to be backed-up, which includes the following folders:
 
 1. `UPLOAD_LOCATION/library`
-1. `UPLOAD_LOCATION/upload`
-1. `UPLOAD_LOCATION/profile`
+2. `UPLOAD_LOCATION/upload`
+3. `UPLOAD_LOCATION/profile`
+
+<details>
+
+<summary>Asset Types and Storage Locations - Versions 1.91.4 and below</summary>
 
 **1. User-Specific Folders:**
 
@@ -90,6 +119,33 @@ Immich stores two types of content in the filesystem: (1) original, unmodified c
   - Files uploaded through mobile apps.
   - Temporarily located in `\library\upload\<userID>`.
   - Transferred to `\library\library\<userID>` upon successful upload.
+
+</details>
+
+**1. User-Specific Folders:**
+
+- Each user has a unique string representing them.
+- You can find your user ID in Account Account Settings -> Account -> User ID.
+
+**2. Asset Types and Storage Locations:**
+
+- **Source Assets:**
+  - Original assets uploaded through the browser interface&mobile&CLI.
+  - Stored in `\library\upload\<userID>`.
+  - Optional in `\library\library\<userID>` (Only if the system administrator activated the storage template engine.)
+- **Avatar Images:**
+  - User profile images.
+  - Stored in `\library\profile\<userID>`.
+- **Thumbs Images:**
+  - Preview images (blurred, small, large) for each asset and thumbnails for recognized faces.
+  - Stored in `\library\thumbs\<userID>`.
+- **Encoded Assets:**
+  - By default, unless otherwise specified re-encoded video assets for wider compatibility.
+  - Stored in `\library\encoded-video\<userID>`.
+
+:::note
+`\library\library` folder is not used by default on new machines running version 1.92.0 .These are if the system administrator activated the storage template engine, for [more info](https://github.com/immich-app/immich/releases#:~:text=the%20partner%E2%80%99s%20assets.-,Hardening%20storage%20template,-We%20have%20further).
+:::
 
 :::danger
 Do not touch the files inside these folders under any circumstances except taking a backup, changing or removing an asset can cause untracked and missing files.
