@@ -1,3 +1,4 @@
+import 'package:auto_route/auto_route.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:immich_mobile/extensions/build_context_extensions.dart';
@@ -5,6 +6,7 @@ import 'package:immich_mobile/modules/backup/providers/error_backup_list.provide
 import 'package:intl/intl.dart';
 import 'package:photo_manager/photo_manager.dart';
 
+@RoutePage()
 class FailedBackupStatusPage extends HookConsumerWidget {
   const FailedBackupStatusPage({Key? key}) : super(key: key);
   @override
@@ -20,7 +22,7 @@ class FailedBackupStatusPage extends HookConsumerWidget {
         ),
         leading: IconButton(
           onPressed: () {
-            context.autoPop(true);
+            context.popRoute(true);
           },
           splashRadius: 24,
           icon: const Icon(

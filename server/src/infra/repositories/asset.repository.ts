@@ -24,10 +24,11 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import _ from 'lodash';
 import { DateTime } from 'luxon';
-import { And, FindOptionsRelations, FindOptionsWhere, In, IsNull, LessThan, Not, Repository } from 'typeorm';
+import path from 'path';
+import { And, Brackets, FindOptionsRelations, FindOptionsWhere, In, IsNull, LessThan, Not, Repository } from 'typeorm';
 import { AssetEntity, AssetJobStatusEntity, AssetType, ExifEntity, SmartInfoEntity } from '../entities';
 import { DummyValue, GenerateSql } from '../infra.util';
-import { OptionalBetween, paginate } from '../infra.utils';
+import { Chunked, ChunkedArray, OptionalBetween, paginate } from '../infra.utils';
 
 const DEFAULT_SEARCH_SIZE = 250;
 
@@ -248,6 +249,7 @@ export class AssetRepository implements IAssetRepository {
   }
 
   @GenerateSql({ params: [[DummyValue.UUID]] })
+  @ChunkedArray()
   getByIds(ids: string[], relations?: FindOptionsRelations<AssetEntity>): Promise<AssetEntity[]> {
     if (!relations) {
       relations = {
@@ -301,6 +303,7 @@ export class AssetRepository implements IAssetRepository {
   }
 
   @GenerateSql({ params: [[DummyValue.UUID]] })
+  @ChunkedArray()
   getByLibraryId(libraryIds: string[]): Promise<AssetEntity[]> {
     return this.repository.find({
       where: { library: { id: In(libraryIds) } },
@@ -361,16 +364,6 @@ export class AssetRepository implements IAssetRepository {
 
   @GenerateSql({ params: [DummyValue.UUID] })
   getById(id: string, relations: FindOptionsRelations<AssetEntity>): Promise<AssetEntity | null> {
-    if (!relations) {
-      relations = {
-        faces: {
-          person: true,
-        },
-        library: true,
-        stack: true,
-      };
-    }
-
     return this.repository.findOne({
       where: { id },
       relations,
@@ -380,14 +373,17 @@ export class AssetRepository implements IAssetRepository {
   }
 
   @GenerateSql({ params: [[DummyValue.UUID], { deviceId: DummyValue.STRING }] })
+  @Chunked()
   async updateAll(ids: string[], options: Partial<AssetEntity>): Promise<void> {
     await this.repository.update({ id: In(ids) }, options);
   }
 
+  @Chunked()
   async softDeleteAll(ids: string[]): Promise<void> {
     await this.repository.softDelete({ id: In(ids), isExternal: false });
   }
 
+  @Chunked()
   async restoreAll(ids: string[]): Promise<void> {
     await this.repository.restore({ id: In(ids) });
   }
@@ -469,11 +465,12 @@ export class AssetRepository implements IAssetRepository {
       case WithoutProperty.EXIF:
         relations = {
           exifInfo: true,
+          jobStatus: true,
         };
         where = {
           isVisible: true,
-          exifInfo: {
-            assetId: IsNull(),
+          jobStatus: {
+            metadataExtractedAt: IsNull(),
           },
         };
         break;
@@ -674,6 +671,7 @@ export class AssetRepository implements IAssetRepository {
     );
   }
 
+  @GenerateSql({ params: [{ size: TimeBucketSize.MONTH }] })
   getTimeBuckets(options: TimeBucketOptions): Promise<TimeBucketItem[]> {
     const truncated = dateTrunc(options);
     return this.getBuilder(options)
@@ -684,6 +682,7 @@ export class AssetRepository implements IAssetRepository {
       .getRawMany();
   }
 
+  @GenerateSql({ params: [DummyValue.TIME_BUCKET, { size: TimeBucketSize.MONTH }] })
   getTimeBucket(timeBucket: string, options: TimeBucketOptions): Promise<AssetEntity[]> {
     const truncated = dateTrunc(options);
     return (
@@ -822,10 +821,15 @@ export class AssetRepository implements IAssetRepository {
       .innerJoin('exif', 'e', 'asset."id" = e."assetId"')
       .leftJoin('smart_info', 'si', 'si."assetId" = asset."id"')
       .andWhere(
-        `(e."exifTextSearchableColumn" || COALESCE(si."smartInfoTextSearchableColumn", to_tsvector('english', '')))
-        @@ PLAINTO_TSQUERY('english', :query)`,
-        { query },
+        new Brackets((qb) => {
+          qb.where(
+            `(e."exifTextSearchableColumn" || COALESCE(si."smartInfoTextSearchableColumn", to_tsvector('english', '')))
+          @@ PLAINTO_TSQUERY('english', :query)`,
+            { query },
+          ).orWhere('asset."originalFileName" = :path', { path: path.parse(query).name });
+        }),
       )
+      .addOrderBy('asset.fileCreatedAt', 'DESC')
       .limit(numResults)
       .getRawMany();
 

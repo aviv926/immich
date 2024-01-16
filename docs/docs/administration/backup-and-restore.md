@@ -3,6 +3,8 @@ import TabItem from '@theme/TabItem';
 
 # Backup and Restore
 
+A [3-2-1 backup strategy](https://www.backblaze.com/blog/the-3-2-1-backup-strategy/) is recommended to protect your data. You should keep copies of your uploaded photos/videos as well as the Immich database for a comprehensive backup solution. This page provides an overview on how to backup the database and the location of user-uploaded pictures and videos. A template bash script that can be run as a cron job is provided [here](/docs/guides/template-backup-script.md)
+
 ## Database
 
 :::caution
@@ -87,12 +89,17 @@ gunzip < db_dumps/last/immich-latest.sql.gz | docker exec -i immich_postgres psq
 Immich stores two types of content in the filesystem: (1) original, unmodified content, and (2) generated content. Only the original content needs to be backed-up, which includes the following folders:
 
 1. `UPLOAD_LOCATION/library`
+<<<<<<< HEAD
 2. `UPLOAD_LOCATION/upload`
 3. `UPLOAD_LOCATION/profile`
 
 <details>
 
 <summary>Asset Types and Storage Locations - Versions 1.91.4 and below</summary>
+=======
+1. `UPLOAD_LOCATION/upload`
+1. `UPLOAD_LOCATION/profile`
+>>>>>>> 7b0104f905bd083c68b39d1db9b16d346608177b
 
 **1. User-Specific Folders:**
 
@@ -120,6 +127,7 @@ Immich stores two types of content in the filesystem: (1) original, unmodified c
   - Temporarily located in `\library\upload\<userID>`.
   - Transferred to `\library\library\<userID>` upon successful upload.
 
+<<<<<<< HEAD
 </details>
 
 **1. User-Specific Folders:**
@@ -147,6 +155,8 @@ Immich stores two types of content in the filesystem: (1) original, unmodified c
 `\library\library` folder is not used by default on new machines running version 1.92.0 .These are if the system administrator activated the storage template engine, for [more info](https://github.com/immich-app/immich/releases#:~:text=the%20partner%E2%80%99s%20assets.-,Hardening%20storage%20template,-We%20have%20further).
 :::
 
+=======
+>>>>>>> 7b0104f905bd083c68b39d1db9b16d346608177b
 :::danger
 Do not touch the files inside these folders under any circumstances except taking a backup, changing or removing an asset can cause untracked and missing files.
 You can think of it as App-Which-Must-Not-Be-Named, the only access to viewing, changing and deleting assets is only through the mobile or browser interface.

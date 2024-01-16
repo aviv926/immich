@@ -1,6 +1,10 @@
 # Database GUI
 
+<<<<<<< HEAD
 A short guide on connecting pgAdmin to Immich.
+=======
+A short guide on connecting [pgAdmin](https://www.pgadmin.org/) to Immich.
+>>>>>>> 7b0104f905bd083c68b39d1db9b16d346608177b
 
 :::note
 
