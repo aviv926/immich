@@ -116,7 +116,7 @@ export class MachineLearningRepository {
       void this.checkAvailability(url);
       return true;
     }
-    return false;
+    return !availability.active;
   }
 
   private async predict<T>(urls: string[], payload: ModelPayload, config: MachineLearningRequest): Promise<T> {
