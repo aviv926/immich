@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import AsyncLock from 'async-lock';
-import { Kysely, sql, Transaction } from 'kysely';
+import { FileMigrationProvider, Kysely, Migrator, sql, Transaction } from 'kysely';
 import { InjectKysely } from 'nestjs-kysely';
+import { readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import semver from 'semver';
 import { EXTENSION_NAMES, POSTGRES_VERSION_RANGE, VECTOR_VERSION_RANGE, VECTORS_VERSION_RANGE } from 'src/constants';
 import { DB } from 'src/db';
@@ -196,13 +198,52 @@ export class DatabaseRepository {
 
   async runMigrations(options?: { transaction?: 'all' | 'none' | 'each' }): Promise<void> {
     const { database } = this.configRepository.getEnv();
-    const dataSource = new DataSource(database.config.typeorm);
 
     this.logger.log('Running migrations, this may take a while');
 
-    await dataSource.initialize();
-    await dataSource.runMigrations(options);
-    await dataSource.destroy();
+    const tableExists = sql<{ result: string | null }>`select to_regclass('migrations') as "result"`;
+    const { rows } = await tableExists.execute(this.db);
+    const hasTypeOrmMigrations = !!rows[0]?.result;
+    if (hasTypeOrmMigrations) {
+      this.logger.debug('Running typeorm migrations');
+      const dataSource = new DataSource(database.config.typeorm);
+      await dataSource.initialize();
+      await dataSource.runMigrations(options);
+      await dataSource.destroy();
+      this.logger.debug('Finished running typeorm migrations');
+    }
+
+    this.logger.debug('Running kysely migrations');
+    const migrator = new Migrator({
+      db: this.db,
+      migrationLockTableName: 'kysely_migrations_lock',
+      migrationTableName: 'kysely_migrations',
+      provider: new FileMigrationProvider({
+        fs: { readdir },
+        path: { join },
+        // eslint-disable-next-line unicorn/prefer-module
+        migrationFolder: join(__dirname, '..', 'schema/migrations'),
+      }),
+    });
+
+    const { error, results } = await migrator.migrateToLatest();
+
+    for (const result of results ?? []) {
+      if (result.status === 'Success') {
+        this.logger.log(`Migration "${result.migrationName}" succeeded`);
+      }
+
+      if (result.status === 'Error') {
+        this.logger.warn(`Migration "${result.migrationName}" failed`);
+      }
+    }
+
+    if (error) {
+      this.logger.error(`Kysely migrations failed: ${error}`);
+      throw error;
+    }
+
+    this.logger.debug('Finished running kysely migrations');
   }
 
   async withLock<R>(lock: DatabaseLock, callback: () => Promise<R>): Promise<R> {

@@ -1,13 +1,11 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { OnEvent, OnJob } from 'src/decorators';
 import { SystemConfigSmtpDto } from 'src/dtos/system-config.dto';
-import { AlbumEntity } from 'src/entities/album.entity';
-import { JobName, JobStatus, QueueName } from 'src/enum';
+import { AssetFileType, JobName, JobStatus, QueueName } from 'src/enum';
 import { ArgOf } from 'src/repositories/event.repository';
 import { EmailTemplate } from 'src/repositories/notification.repository';
 import { BaseService } from 'src/services/base.service';
 import { EmailImageAttachment, IEntityJob, INotifyAlbumUpdateJob, JobItem, JobOf } from 'src/types';
-import { getAssetFiles } from 'src/utils/asset.util';
 import { getFilenameExtension } from 'src/utils/file';
 import { getExternalDomain } from 'src/utils/misc';
 import { isEqualObject } from 'src/utils/object';
@@ -146,11 +144,10 @@ export class NotificationService extends BaseService {
     }
 
     const { server } = await this.getConfig({ withCache: false });
-    const { port } = this.configRepository.getEnv();
     const { html, text } = await this.notificationRepository.renderEmail({
       template: EmailTemplate.TEST_EMAIL,
       data: {
-        baseUrl: getExternalDomain(server, port),
+        baseUrl: getExternalDomain(server),
         displayName: user.name,
       },
       customTemplate: tempTemplate!,
@@ -170,7 +167,6 @@ export class NotificationService extends BaseService {
 
   async getTemplate(name: EmailTemplate, customTemplate: string) {
     const { server, templates } = await this.getConfig({ withCache: false });
-    const { port } = this.configRepository.getEnv();
 
     let templateResponse = '';
 
@@ -179,7 +175,7 @@ export class NotificationService extends BaseService {
         const { html: _welcomeHtml } = await this.notificationRepository.renderEmail({
           template: EmailTemplate.WELCOME,
           data: {
-            baseUrl: getExternalDomain(server, port),
+            baseUrl: getExternalDomain(server),
             displayName: 'John Doe',
             username: 'john@doe.com',
             password: 'thisIsAPassword123',
@@ -194,7 +190,7 @@ export class NotificationService extends BaseService {
         const { html: _updateAlbumHtml } = await this.notificationRepository.renderEmail({
           template: EmailTemplate.ALBUM_UPDATE,
           data: {
-            baseUrl: getExternalDomain(server, port),
+            baseUrl: getExternalDomain(server),
             albumId: '1',
             albumName: 'Favorite Photos',
             recipientName: 'Jane Doe',
@@ -210,7 +206,7 @@ export class NotificationService extends BaseService {
         const { html } = await this.notificationRepository.renderEmail({
           template: EmailTemplate.ALBUM_INVITE,
           data: {
-            baseUrl: getExternalDomain(server, port),
+            baseUrl: getExternalDomain(server),
             albumId: '1',
             albumName: "John Doe's Favorites",
             senderName: 'John Doe',
@@ -239,11 +235,10 @@ export class NotificationService extends BaseService {
     }
 
     const { server, templates } = await this.getConfig({ withCache: true });
-    const { port } = this.configRepository.getEnv();
     const { html, text } = await this.notificationRepository.renderEmail({
       template: EmailTemplate.WELCOME,
       data: {
-        baseUrl: getExternalDomain(server, port),
+        baseUrl: getExternalDomain(server),
         displayName: user.name,
         username: user.email,
         password: tempPassword,
@@ -285,11 +280,10 @@ export class NotificationService extends BaseService {
     const attachment = await this.getAlbumThumbnailAttachment(album);
 
     const { server, templates } = await this.getConfig({ withCache: false });
-    const { port } = this.configRepository.getEnv();
     const { html, text } = await this.notificationRepository.renderEmail({
       template: EmailTemplate.ALBUM_INVITE,
       data: {
-        baseUrl: getExternalDomain(server, port),
+        baseUrl: getExternalDomain(server),
         albumId: album.id,
         albumName: album.albumName,
         senderName: album.owner.name,
@@ -332,7 +326,6 @@ export class NotificationService extends BaseService {
     const attachment = await this.getAlbumThumbnailAttachment(album);
 
     const { server, templates } = await this.getConfig({ withCache: false });
-    const { port } = this.configRepository.getEnv();
 
     for (const recipient of recipients) {
       const user = await this.userRepository.get(recipient.id, { withDeleted: false });
@@ -349,7 +342,7 @@ export class NotificationService extends BaseService {
       const { html, text } = await this.notificationRepository.renderEmail({
         template: EmailTemplate.ALBUM_UPDATE,
         data: {
-          baseUrl: getExternalDomain(server, port),
+          baseUrl: getExternalDomain(server),
           albumId: album.id,
           albumName: album.albumName,
           recipientName: recipient.name,
@@ -397,20 +390,25 @@ export class NotificationService extends BaseService {
     return JobStatus.SUCCESS;
   }
 
-  private async getAlbumThumbnailAttachment(album: AlbumEntity): Promise<EmailImageAttachment | undefined> {
+  private async getAlbumThumbnailAttachment(album: {
+    albumThumbnailAssetId: string | null;
+  }): Promise<EmailImageAttachment | undefined> {
     if (!album.albumThumbnailAssetId) {
       return;
     }
 
-    const albumThumbnail = await this.assetRepository.getById(album.albumThumbnailAssetId, { files: true });
-    const { thumbnailFile } = getAssetFiles(albumThumbnail?.files);
-    if (!thumbnailFile) {
+    const albumThumbnailFiles = await this.assetJobRepository.getAlbumThumbnailFiles(
+      album.albumThumbnailAssetId,
+      AssetFileType.THUMBNAIL,
+    );
+
+    if (albumThumbnailFiles.length !== 1) {
       return;
     }
 
     return {
-      filename: `album-thumbnail${getFilenameExtension(thumbnailFile.path)}`,
-      path: thumbnailFile.path,
+      filename: `album-thumbnail${getFilenameExtension(albumThumbnailFiles[0].path)}`,
+      path: albumThumbnailFiles[0].path,
       cid: 'album-thumbnail',
     };
   }

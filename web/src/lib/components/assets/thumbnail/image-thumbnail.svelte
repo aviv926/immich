@@ -4,6 +4,7 @@
   import Icon from '$lib/components/elements/icon.svelte';
   import { TUNABLES } from '$lib/utils/tunables';
   import { mdiEyeOffOutline } from '@mdi/js';
+  import type { ClassValue } from 'svelte/elements';
   import { fade } from 'svelte/transition';
 
   interface Props {
@@ -18,10 +19,10 @@
     circle?: boolean;
     hidden?: boolean;
     border?: boolean;
-    preload?: boolean;
     hiddenIconClass?: string;
-    onComplete?: (() => void) | undefined;
-    onClick?: (() => void) | undefined;
+    class?: ClassValue;
+    brokenAssetClass?: ClassValue;
+    onComplete?: ((errored: boolean) => void) | undefined;
   }
 
   let {
@@ -38,6 +39,8 @@
     border = false,
     hiddenIconClass = 'text-white',
     onComplete = undefined,
+    class: imageClass = '',
+    brokenAssetClass = '',
   }: Props = $props();
 
   let {
@@ -49,17 +52,17 @@
 
   const setLoaded = () => {
     loaded = true;
-    onComplete?.();
+    onComplete?.(false);
   };
   const setErrored = () => {
     errored = true;
-    onComplete?.();
+    onComplete?.(true);
   };
 
   function mount(elem: HTMLImageElement) {
     if (elem.complete) {
       loaded = true;
-      onComplete?.();
+      onComplete?.(false);
     }
   }
 
@@ -70,6 +73,7 @@
       shadow && 'shadow-lg',
       (circle || !heightStyle) && 'aspect-square',
       border && 'border-[3px] border-immich-dark-primary/80 hover:border-immich-primary',
+      brokenAssetClass,
     ]
       .filter(Boolean)
       .join(' '),
@@ -90,7 +94,7 @@
     src={url}
     alt={loaded || errored ? altText : ''}
     {title}
-    class="object-cover {optionalClasses}"
+    class={['object-cover', optionalClasses, imageClass]}
     class:opacity-0={!thumbhash && !loaded}
     draggable="false"
   />
