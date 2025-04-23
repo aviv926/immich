@@ -1,39 +1,69 @@
-name: Build and Push Docker Image
+name: Custom Immich Build
 
 on:
-  push:
-    branches:
-      - ml-feature
-
   workflow_dispatch:
-  
+    inputs:
+      tag:
+        description: 'Tag to use for images (e.g., test-feature)'
+        required: true
+        type: string
+
 jobs:
-  build-and-push:
+  build-server:
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-      packages: write
-
+    env:
+      GHCR_REPO: ghcr.io/${{ github.repository_owner }}/immich-server
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
+          username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+      - name: Build and push server image
+        uses: docker/build-push-action@v6
         with:
           context: .
-          file: server.Dockerfile
+          file: server/Dockerfile
+          platforms: linux/amd64
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/immich-server:ml-feature
+          tags: ghcr.io/${{ github.repository_owner }}/immich-server:pr-${{ github.event.inputs.tag }}
 
+  build-ml:
+    runs-on: ubuntu-latest
+    env:
+      GHCR_REPO: ghcr.io/${{ github.repository_owner }}/immich-machine-learning
+    strategy:
+      matrix:
+        include:
+          - device: cpu
+            suffix: ""
+            dockerfile: machine-learning/Dockerfile
+          - device: cuda
+            suffix: "-cuda"
+            dockerfile: machine-learning/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ML image
+        uses: docker/build-push-action@v6
+        with:
+          context: machine-learning
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            DEVICE=${{ matrix.device }}
+          tags: ghcr.io/${{ github.repository_owner }}/immich-machine-learning:pr-${{ github.event.inputs.tag }}${{ matrix.suffix }}
