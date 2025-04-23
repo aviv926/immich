@@ -139,14 +139,15 @@ export class MachineLearningRepository {
       }
 
       try {
-        let url = new URL(path, baseUrl)
+        let url = new URL(path, baseUrl);
         const response = await fetch(url, { method: 'POST', body: formData });
         if (response.ok) {
           this.setUrlAvailability(baseUrl + path, true);
           return response.json();
         }
 
-        if (response.status == 501) { // not implemented
+        if (response.status == 501) {
+          // not implemented
           this.logger.debug(
             `Machine learning request to "${url}" failed with status ${response.status} (${response.statusText}): ${await response.text()}`,
           );
