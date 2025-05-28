@@ -7,41 +7,41 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  packages: write
+  contents: write       # to update your branch
+  packages: write       # to push images to GHCR
   actions: read
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     outputs:
-      release_tag: ${{ steps.get_release.outputs.tag }}
+      release_tag: ${{ steps.get_latest.outputs.tag }}
     steps:
-      - name: Get latest Immich release tag
-        id: get_release
+      - name: Fetch latest Immich release tag
+        id: get_latest
         uses: actions/github-script@v6
         with:
           script: |
-            const latest = await github.rest.repos.getLatestRelease({
+            const release = await github.rest.repos.getLatestRelease({
               owner: 'immich-app',
-              repo: 'immich',
+              repo:  'immich'
             });
-            return latest.data.tag_name;
+            return release.data.tag_name;
           result-encoding: string
 
-      - name: Check out this repo
+      - name: Check out this repo (full history)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Add Immich upstream remote & fetch
+      - name: Add upstream & fetch tags
         run: |
           git remote add upstream https://github.com/immich-app/immich.git
           git fetch upstream --tags
 
-      - name: Update `dockerimageML` branch
+      - name: Force-update `dockerimageML` → latest tag
         run: |
-          git branch -f dockerimageML ${{ steps.get_release.outputs.tag }}
+          git branch -f dockerimageML ${{ steps.get_latest.outputs.tag }}
           git push origin dockerimageML --force
 
   build-server:
@@ -51,12 +51,13 @@ jobs:
       IMAGE_TAG: ${{ needs.sync.outputs.release_tag }}
       GHCR_REPO: ghcr.io/${{ github.repository_owner }}
     steps:
-      - name: Checkout `dockerimageML`
+      - name: Check out code _at_ the release tag
         uses: actions/checkout@v4
         with:
-          ref: dockerimageML
+          ref: ${{ env.IMAGE_TAG }}
+          fetch-depth: 0
 
-      - name: Set up Docker Buildx
+      - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
@@ -84,20 +85,19 @@ jobs:
         include:
           - device: cpu
             suffix: ""
-            dockerfile: Dockerfile
           - device: cuda
             suffix: "-cuda"
-            dockerfile: Dockerfile
     env:
       IMAGE_TAG: ${{ needs.sync.outputs.release_tag }}
       GHCR_REPO: ghcr.io/${{ github.repository_owner }}
     steps:
-      - name: Checkout `dockerimageML`
+      - name: Check out code _at_ the release tag
         uses: actions/checkout@v4
         with:
-          ref: dockerimageML
+          ref: ${{ env.IMAGE_TAG }}
+          fetch-depth: 0
 
-      - name: Set up Docker Buildx
+      - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
@@ -107,11 +107,13 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GHCR_PAT }}
 
-      - name: Build & push ML image (${{ matrix.device }})
+      - name: Build & push ML image (${{
+          matrix.device
+        }})
         uses: docker/build-push-action@v6
         with:
           context: machine-learning
-          file: machine-learning/${{ matrix.dockerfile }}
+          file: machine-learning/Dockerfile
           platforms: linux/amd64
           push: true
           build-args: |
