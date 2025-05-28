@@ -112,9 +112,9 @@ jobs:
         if: steps.check_if_new.outputs.should_run_build == 'true'
         env:
           TARGET_BRANCH: dockerimageML
-          # Using AVIV926_REPO_PAT for explicit cross-operation feel, GITHUB_TOKEN could also work with correct permissions.
-          PUSH_TOKEN: ${{ secrets.AVIV926_REPO_PAT }}
-          TARGET_REPO_URL: https://x-access-token:${{ secrets.AVIV926_REPO_PAT }}@github.com/${{ github.repository_owner }}/immich.git
+          # Using REPO_PAT for explicit cross-operation feel, GITHUB_TOKEN could also work with correct permissions.
+          PUSH_TOKEN: ${{ secrets.REPO_PAT }}
+          TARGET_REPO_URL: https://x-access-token:${{ secrets.REPO_PAT }}@github.com/${{ github.repository_owner }}/immich.git
         run: |
           cd upstream_source
           echo "Current directory: $(pwd)"
