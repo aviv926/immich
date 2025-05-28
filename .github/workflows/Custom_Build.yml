@@ -1,119 +1,223 @@
-# .github/workflows/sync-and-build.yml
-name: Sync Immich Release & Build Images
+name: Sync Immich Upstream Release and Build Images
 
 on:
   schedule:
-    - cron: '0 * * * *'    # every hour
-  workflow_dispatch:
+    # Adjust cron schedule as needed. This runs every 6 hours.
+    # See https://crontab.guru/ for help
+    - cron: '0 */6 * * *'
+  workflow_dispatch: # Allows manual triggering from the Actions tab
+    inputs:
+      force_run:
+        description: 'Force sync and build for the latest upstream release, even if previously processed.'
+        type: boolean
+        default: false
+      specific_tag:
+        description: '(Optional) Specific immich-app/immich tag to sync and build (e.g., v1.100.0). Overrides latest.'
+        required: false
+        type: string
 
+# These permissions are crucial
 permissions:
-  contents: write      # update branches
-  packages: write      # push to GHCR
-  actions: read
+  contents: write   # To push to the dockerimageML branch in this (aviv926/immich) repository
+  packages: write   # To push Docker images to GHCR
+  actions: read     # To read cache, octokit/request-action needs this for GITHUB_TOKEN
 
 jobs:
-  sync:
+  sync_and_build:
     runs-on: ubuntu-latest
     outputs:
-      release_tag: ${{ steps.get_release.outputs.tag }}
+      release_tag: ${{ steps.determine_tag.outputs.tag_to_process }}
+      should_run_build: ${{ steps.check_if_new.outputs.should_run_build }}
+
     steps:
-      - name: Get latest Immich release tag
-        id: get_release
-        uses: actions/github-script@v6
+      - name: Harden Runner
+        uses: step-security/harden-runner@17d0e2bd7d51742c71671bd19fa12bdc9d40a3d6 # v2.8.1
         with:
-          script: |
-            const latest = await github.rest.repos.getLatestRelease({
-              owner: 'immich-app',
-              repo: 'immich',
-            });
-            return latest.data.tag_name;
-          result-encoding: string
+          egress-policy: audit # TODO: change to 'egress-policy: block' after couple of runs
 
-      - name: Fetch upstream with tags
+      - name: Determine Upstream Tag to Process
+        id: determine_tag
         run: |
-          git init
-          git remote add upstream https://github.com/immich-app/immich.git
-          git fetch upstream --tags --depth=1
+          if [ -n "${{ github.event.inputs.specific_tag }}" ]; then
+            echo "Using specific tag from input: ${{ github.event.inputs.specific_tag }}"
+            echo "tag_to_process=${{ github.event.inputs.specific_tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "Fetching latest release tag from immich-app/immich..."
+            LATEST_TAG_JSON=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                              -H "Accept: application/vnd.github.v3+json" \
+                              https://api.github.com/repos/immich-app/immich/releases/latest)
+            LATEST_TAG=$(echo "$LATEST_TAG_JSON" | jq -r .tag_name)
+            if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" == "null" ]; then
+              echo "Failed to fetch latest tag or tag is null."
+              echo "Response: $LATEST_TAG_JSON"
+              exit 1
+            fi
+            echo "Latest upstream release tag: $LATEST_TAG"
+            echo "tag_to_process=$LATEST_TAG" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Reset dockerimageML branch to latest tag
+      - name: Restore last processed tag cache
+        id: cache_tag_restore
+        uses: actions/cache/restore@v4
+        with:
+          path: .last_processed_tag_value
+          key: last-processed-immich-tag-${{ steps.determine_tag.outputs.tag_to_process }} # Key includes the tag itself
+
+      - name: Check if new release or forced run
+        id: check_if_new
         run: |
-          TAG=${{ steps.get_release.outputs.tag }}
-          # create/reset local branch at the tag
-          git checkout -B dockerimageML upstream/${TAG}
-          # force-push to your repo
-          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} dockerimageML --force
+          ACTUAL_UPSTREAM_TAG="${{ steps.determine_tag.outputs.tag_to_process }}"
+          echo "Actual upstream tag to process: $ACTUAL_UPSTREAM_TAG"
 
-  build-server:
-    needs: sync
-    runs-on: ubuntu-latest
-    env:
-      IMAGE_TAG: ${{ needs.sync.outputs.release_tag }}
-      GHCR_REPO: ghcr.io/${{ github.repository_owner }}
-    steps:
-      - name: Checkout dockerimageML
+          # If cache_tag_restore.outputs.cache-hit is true, it means we've processed this exact tag before.
+          if [ "${{ steps.cache_tag_restore.outputs.cache-hit }}" == "true" ] && \
+             [ "${{ github.event.inputs.force_run }}" == "false" ] && \
+             [ "${{ github.event_name }}" == "schedule" ]; then
+            echo "Tag $ACTUAL_UPSTREAM_TAG has already been processed (cache hit) and not a forced run. Skipping sync and build."
+            echo "should_run_build=false" >> $GITHUB_OUTPUT
+          else
+            if [ "${{ steps.cache_tag_restore.outputs.cache-hit }}" == "true" ]; then
+                echo "Tag $ACTUAL_UPSTREAM_TAG was processed before, but this is a forced run or manual dispatch."
+            else
+                echo "New tag $ACTUAL_UPSTREAM_TAG or cache miss."
+            fi
+            echo "Proceeding with sync and build."
+            echo "should_run_build=true" >> $GITHUB_OUTPUT
+            # Create the file that will be cached if should_run_build is true
+            echo "$ACTUAL_UPSTREAM_TAG" > .last_processed_tag_value
+          fi
+
+      - name: Save processed tag to cache (if build happened)
+        if: steps.check_if_new.outputs.should_run_build == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .last_processed_tag_value
+          key: last-processed-immich-tag-${{ steps.determine_tag.outputs.tag_to_process }}
+
+      - name: Checkout upstream immich-app/immich release code
+        if: steps.check_if_new.outputs.should_run_build == 'true'
         uses: actions/checkout@v4
         with:
-          ref: dockerimageML
-          fetch-depth: 0
+          repository: immich-app/immich
+          ref: ${{ steps.determine_tag.outputs.tag_to_process }}
+          path: upstream_source # Checkout to a subdirectory
+
+      - name: Configure Git for pushing to aviv926/immich
+        if: steps.check_if_new.outputs.should_run_build == 'true'
+        run: |
+          git config --global user.name "GitHub Actions Bot (Immich Sync)"
+          git config --global user.email "actions-bot@users.noreply.github.com"
+
+      - name: Push code to aviv926/immich dockerimageML branch
+        if: steps.check_if_new.outputs.should_run_build == 'true'
+        env:
+          TARGET_BRANCH: dockerimageML
+          # Using AVIV926_REPO_PAT for explicit cross-operation feel, GITHUB_TOKEN could also work with correct permissions.
+          PUSH_TOKEN: ${{ secrets.AVIV926_REPO_PAT }}
+          TARGET_REPO_URL: https://x-access-token:${{ secrets.AVIV926_REPO_PAT }}@github.com/${{ github.repository_owner }}/immich.git
+        run: |
+          cd upstream_source
+          echo "Current directory: $(pwd)"
+          echo "Attempting to push current HEAD (tag ${{ steps.determine_tag.outputs.tag_to_process }}) to $TARGET_REPO_URL branch $TARGET_BRANCH"
+          git remote add destination_repo $TARGET_REPO_URL
+          git push destination_repo HEAD:refs/heads/$TARGET_BRANCH --force
+          echo "Push to $TARGET_BRANCH complete."
+          cd .. # Go back to GITHUB_WORKSPACE root
+
+  # --- Docker Build Jobs ---
+  # These jobs will run only if the sync_and_build job determined it should run.
+  # They will checkout the freshly updated dockerimageML branch from aviv926/immich.
+
+  build-server:
+    needs: sync_and_build
+    if: needs.sync_and_build.outputs.should_run_build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read    # To checkout code
+      packages: write   # To push to GHCR
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@17d0e2bd7d51742c71671bd19fa12bdc9d40a3d6 # v2.8.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout aviv926/immich@dockerimageML
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }} # This repository (aviv926/immich)
+          ref: dockerimageML        # The branch we just pushed to
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GHCR
+      - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
-          password: ${{ secrets.GHCR_PAT }}
+          password: ${{ secrets.GITHUB_TOKEN }} # Use GITHUB_TOKEN for GHCR
 
-      - name: Build & push server image
+      - name: Build and push server image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: server/Dockerfile
           platforms: linux/amd64
           push: true
-          tags: |
-            ${{ env.GHCR_REPO }}/immich-server:${{ env.IMAGE_TAG }}
+          # Use the actual release tag for the Docker image tag
+          tags: ghcr.io/${{ github.repository_owner }}/immich-server:${{ needs.sync_and_build.outputs.release_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
 
   build-ml:
-    needs: sync
+    needs: sync_and_build
+    if: needs.sync_and_build.outputs.should_run_build == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     strategy:
       matrix:
         include:
           - device: cpu
             suffix: ""
+            dockerfile: machine-learning/Dockerfile
           - device: cuda
             suffix: "-cuda"
-    env:
-      IMAGE_TAG: ${{ needs.sync.outputs.release_tag }}
-      GHCR_REPO: ghcr.io/${{ github.repository_owner }}
+            dockerfile: machine-learning/Dockerfile # Assuming same Dockerfile, adjust if different
     steps:
-      - name: Checkout dockerimageML
+      - name: Harden Runner
+        uses: step-security/harden-runner@17d0e2bd7d51742c71671bd19fa12bdc9d40a3d6 # v2.8.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout aviv926/immich@dockerimageML
         uses: actions/checkout@v4
         with:
+          repository: ${{ github.repository }}
           ref: dockerimageML
-          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GHCR
+      - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
-          password: ${{ secrets.GHCR_PAT }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & push ML image (matrix ${{ matrix.device }})
+      - name: Build and push ML image (${{ matrix.device }})
         uses: docker/build-push-action@v6
         with:
-          context: machine-learning
-          file: machine-learning/Dockerfile
+          context: machine-learning # This should be the path to the ML Dockerfile context
+          file: ${{ matrix.dockerfile }} # Path relative to the context (or absolute from repo root)
           platforms: linux/amd64
           push: true
           build-args: |
             DEVICE=${{ matrix.device }}
-          tags: |
-            ${{ env.GHCR_REPO }}/immich-machine-learning:${{ env.IMAGE_TAG }}${{ matrix.suffix }}
+          # Use the actual release tag for the Docker image tag
+          tags: ghcr.io/${{ github.repository_owner }}/immich-machine-learning:${{ needs.sync_and_build.outputs.release_tag }}${{ matrix.suffix }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
