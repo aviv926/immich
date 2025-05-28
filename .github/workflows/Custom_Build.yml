@@ -17,9 +17,9 @@ on:
 
 # Permissions for GITHUB_TOKEN used by other steps (API calls, GHCR push)
 permissions:
-  contents: read    # Default for checkout, GITHUB_TOKEN can read. Push uses PAT.
-  packages: write   # For GITHUB_TOKEN to push Docker images to GHCR
-  actions: read     # For GITHUB_TOKEN to make API calls (e.g., in determine_tag)
+  contents: write     # <── allow push
+  packages: write
+  actions: read
 
 jobs:
   sync_and_build:
@@ -121,26 +121,24 @@ jobs:
         if: steps.check_if_new.outputs.should_run_build == 'true'
         env:
           TARGET_BRANCH: dockerimageML
-          # Use your REPO_PATwhich MUST have 'repo' AND 'workflow' scopes for this to work
-          TARGET_REPO_URL: https://x-access-token:${{ secrets.REPO_PAT}}@github.com/${{ github.repository_owner }}/immich.git
+          # Use GITHUB_TOKEN for authentication
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The URL itself doesn't need the token if a credential helper is configured
+          # or if you embed it like you did with the PAT.
+          TARGET_REPO_URL: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git # Or simply github.repository_owner / immich.git
         run: |
           cd upstream_source
           echo "Current directory: $(pwd)"
-          echo "Attempting to push current HEAD (tag ${{ steps.determine_tag.outputs.tag_to_process }}) to ${{ github.repository_owner }}/immich branch $TARGET_BRANCH using PAT"
+          echo "Attempting to push current HEAD (tag ${{ steps.determine_tag.outputs.tag_to_process }}) to ${{ github.repository_owner }}/immich branch $TARGET_BRANCH using GITHUB_TOKEN"
           
-          # Clean any previous remote and add fresh
           git remote rm destination_repo 2>/dev/null || true 
-          git remote add destination_repo "$TARGET_REPO_URL"
-          
-          # Fetch the target branch to see if it exists, helps avoid some errors if it's the very first push
-          # and provides a more specific error if the branch doesn't exist and we're not force pushing to create it.
-          # However, with --force, this fetch isn't strictly necessary for the push itself.
-          # git fetch destination_repo $TARGET_BRANCH # Optional
+          # Use the GH_TOKEN in the URL
+          git remote add destination_repo "https://x-access-token:$GH_TOKEN@github.com/${{ github.repository_owner }}/immich.git"
           
           echo "Pushing with force to $TARGET_BRANCH..."
           git push destination_repo HEAD:refs/heads/$TARGET_BRANCH --force
           echo "Push to $TARGET_BRANCH complete."
-          cd .. # Go back to GITHUB_WORKSPACE root
+          cd ..
 
   # --- Docker Build Jobs ---
   # These jobs will run only if the sync_and_build job determined it should run.
