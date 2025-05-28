@@ -1,4 +1,3 @@
-# .github/workflows/sync-and-build.yml
 name: Sync Immich Release & Build Images
 
 on:
