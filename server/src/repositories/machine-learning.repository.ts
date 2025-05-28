@@ -85,66 +85,82 @@ export class MachineLearningRepository {
     };
   }
 
-  private async checkAvailability(url: string) {
+  private async checkAvailability(baseUrl: string, path: string) {
     let active = false;
     try {
-      const response = await fetch(new URL('/ping', url), {
+      const response = await fetch(new URL('/ping', baseUrl), {
         signal: AbortSignal.timeout(MACHINE_LEARNING_PING_TIMEOUT),
       });
       active = response.ok;
     } catch {
       // nothing to do here
     }
-    this.setUrlAvailability(url, active);
+    this.setUrlAvailability(baseUrl + path, active);
     return active;
   }
 
-  private async shouldSkipUrl(url: string) {
-    const availability = this.urlAvailability[url];
+  private async shouldSkipUrl(baseUrl: string, path: string) {
+    const availability = this.urlAvailability[baseUrl + path];
     if (availability === undefined) {
       // If this is a new endpoint, then check inline and skip if it fails
-      if (!(await this.checkAvailability(url))) {
+      if (!(await this.checkAvailability(baseUrl, path))) {
         return true;
       }
       return false;
     }
-    if (!availability.active && Date.now() - availability.lastChecked < MACHINE_LEARNING_AVAILABILITY_BACKOFF_TIME) {
+    if (!availability.active && Date.now() - availability.lastChecked > MACHINE_LEARNING_AVAILABILITY_BACKOFF_TIME) {
       // If this is an old inactive endpoint that hasn't been checked in a
       // while then check but don't wait for the result, just skip it
       // This avoids delays on every search whilst allowing higher priority
       // ML servers to recover over time.
-      void this.checkAvailability(url);
+      void this.checkAvailability(baseUrl, path);
       return true;
     }
-    return false;
+    return !availability.active;
   }
 
   private async predict<T>(urls: string[], payload: ModelPayload, config: MachineLearningRequest): Promise<T> {
     const formData = await this.getFormData(payload, config);
     let urlCounter = 0;
-    for (const url of urls) {
+    for (const baseUrl of urls) {
+      let path = '/predict';
+      if (ModelTask.FACIAL_RECOGNITION in config) {
+        path = path + '/face';
+      } else if (formData.has('text')) {
+        path = path + '/text';
+      } else {
+        path = path + '/image';
+      }
+
       urlCounter++;
       const isLast = urlCounter >= urls.length;
-      if (!isLast && (await this.shouldSkipUrl(url))) {
+      if (!isLast && (await this.shouldSkipUrl(baseUrl, path))) {
         continue;
       }
 
       try {
-        const response = await fetch(new URL('/predict', url), { method: 'POST', body: formData });
+        let url = new URL(path, baseUrl)
+        const response = await fetch(url, { method: 'POST', body: formData });
         if (response.ok) {
-          this.setUrlAvailability(url, true);
+          this.setUrlAvailability(baseUrl + path, true);
           return response.json();
         }
 
-        this.logger.warn(
-          `Machine learning request to "${url}" failed with status ${response.status}: ${response.statusText}`,
-        );
+        if (response.status == 501) { // not implemented
+          this.logger.debug(
+            `Machine learning request to "${url}" failed with status ${response.status} (${response.statusText}): ${await response.text()}`,
+          );
+        } else {
+          this.logger.warn(
+            `Machine learning request to "${url}" failed with status ${response.status} (${response.statusText})`,
+          );
+        }
       } catch (error: Error | unknown) {
         this.logger.warn(
-          `Machine learning request to "${url}" failed: ${error instanceof Error ? error.message : error}`,
+          `Machine learning request to "${baseUrl}" failed: ${error instanceof Error ? error.message : error}`,
         );
       }
-      this.setUrlAvailability(url, false);
+      this.setUrlAvailability(baseUrl + path, false);
     }
 
     throw new Error(`Machine learning request '${JSON.stringify(config)}' failed for all URLs`);
