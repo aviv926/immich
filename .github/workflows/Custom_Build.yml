@@ -2,10 +2,8 @@ name: Sync Immich Upstream Release and Build Images
 
 on:
   schedule:
-    # Adjust cron schedule as needed. This runs every 6 hours.
-    # See https://crontab.guru/ for help
     - cron: '0 */6 * * *'
-  workflow_dispatch: # Allows manual triggering from the Actions tab
+  workflow_dispatch:
     inputs:
       force_run:
         description: 'Force sync and build for the latest upstream release, even if previously processed.'
@@ -16,11 +14,11 @@ on:
         required: false
         type: string
 
-# These permissions are crucial
 permissions:
-  contents: write   # To push to the dockerimageML branch in this (aviv926/immich) repository
+  contents: write   # To push to the dockerimageML branch (non-workflow files)
   packages: write   # To push Docker images to GHCR
-  actions: read     # To read cache, octokit/request-action needs this for GITHUB_TOKEN
+  actions: read     # For API calls by determine_tag step, and cache
+  workflows: write  # <--- ADD THIS LINE: To allow GITHUB_TOKEN to push workflow files
 
 jobs:
   sync_and_build:
