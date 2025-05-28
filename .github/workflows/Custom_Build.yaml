@@ -200,8 +200,7 @@ Workflow sync strategy: Target branch .github/workflows preserved. Upstream .git
           
           cd "${{ github.workspace }}" # Return to original GITHUB_WORKSPACE
 
-  # --- Docker Build Jobs ---
-  build-server:
+build-server:
     needs: sync_and_build
     if: needs.sync_and_build.outputs.should_run_build == 'true'
     runs-on: ubuntu-latest
@@ -239,7 +238,7 @@ Workflow sync strategy: Target branch .github/workflows preserved. Upstream .git
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  build-ml:
+build-ml:
     needs: [sync_and_build, build-server]
     if: needs.sync_and_build.outputs.should_run_build == 'true'
     runs-on: ubuntu-latest
