@@ -15,11 +15,12 @@ on:
         required: false
         type: string
 
-# Permissions for GITHUB_TOKEN used by other steps (API calls, GHCR push)
+# Default permissions for GITHUB_TOKEN for all jobs.
+# Can be overridden at the job level.
 permissions:
-  contents: read    # Default for checkout by GITHUB_TOKEN. Push to self-repo will need 'write' at job level.
-  packages: write   # For GITHUB_TOKEN to push Docker images to GHCR
-  actions: read     # For GITHUB_TOKEN to make API calls (e.g., in determine_tag)
+  contents: read    # Needed for checkout in build jobs, GITHUB_TOKEN can read.
+  packages: write   # For GITHUB_TOKEN to push Docker images to GHCR.
+  actions: read     # For GITHUB_TOKEN to make API calls (e.g., in determine_tag).
 
 jobs:
   sync_and_build:
@@ -27,14 +28,78 @@ jobs:
     outputs:
       release_tag: ${{ steps.determine_tag.outputs.tag_to_process }}
       should_run_build: ${{ steps.check_if_new.outputs.should_run_build }}
-    permissions: # Permissions specifically for this job using GITHUB_TOKEN
-      contents: write   # <<<<<<< NEEDED for GITHUB_TOKEN to push to its own repo
-      packages: write   # (If this job also pushes packages, otherwise can be at workflow level)
-      actions: read     # (If this job also makes API calls, otherwise can be at workflow level)
-      # workflows: write # <<<<<<< NOT NEEDED with the new strategy
+    permissions: # Specific permissions for this job
+      contents: write  # Needed for GITHUB_TOKEN to push code to its own repository.
+      # Inherits 'packages: write' and 'actions: read' from workflow level.
 
     steps:
-      # ... (Harden Runner, Determine Upstream Tag, Cache steps, Check if new, Save Cache) ...
+      - name: Harden Runner
+        uses: step-security/harden-runner@17d0e2bd7d51742c71671bd19fa12bdc9d40a3d6 # v2.8.1
+        with:
+          egress-policy: audit
+
+      - name: Determine Upstream Tag to Process
+        id: determine_tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "${{ github.event.inputs.specific_tag }}" ]; then
+            echo "Using specific tag from input: ${{ github.event.inputs.specific_tag }}"
+            echo "tag_to_process=${{ github.event.inputs.specific_tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "Fetching latest release tag from immich-app/immich..."
+            LATEST_TAG_JSON=$(curl -s -L -H "Authorization: token $GH_TOKEN" \
+                              -H "Accept: application/vnd.github.v3+json" \
+                              https://api.github.com/repos/immich-app/immich/releases/latest)
+            LATEST_TAG=$(echo "$LATEST_TAG_JSON" | jq -r .tag_name)
+
+            if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" == "null" ] || [ "$LATEST_TAG" == "" ]; then
+              echo "Error: Failed to fetch a valid latest tag name."
+              echo "API Response: $LATEST_TAG_JSON"
+              if echo "$LATEST_TAG_JSON" | jq -e '.message | startswith("API rate limit exceeded")' > /dev/null; then
+                 echo "API rate limit exceeded. Consider increasing schedule interval or using a PAT for API calls if this persists."
+              fi
+              exit 1
+            fi
+            echo "Latest upstream release tag: $LATEST_TAG"
+            echo "tag_to_process=$LATEST_TAG" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Restore last processed tag cache
+        id: cache_tag_restore
+        uses: actions/cache/restore@v4
+        with:
+          path: .last_processed_tag_value
+          key: last-processed-immich-tag-${{ steps.determine_tag.outputs.tag_to_process }}
+
+      - name: Check if new release or forced run
+        id: check_if_new
+        run: |
+          ACTUAL_UPSTREAM_TAG="${{ steps.determine_tag.outputs.tag_to_process }}"
+          echo "Actual upstream tag to process: $ACTUAL_UPSTREAM_TAG"
+
+          if [ "${{ steps.cache_tag_restore.outputs.cache-hit }}" == "true" ] && \
+             [ "${{ github.event.inputs.force_run }}" == "false" ] && \
+             [ "${{ github.event_name }}" == "schedule" ]; then
+            echo "Tag $ACTUAL_UPSTREAM_TAG has already been processed (cache hit) and not a forced run. Skipping sync and build."
+            echo "should_run_build=false" >> $GITHUB_OUTPUT
+          else
+            if [ "${{ steps.cache_tag_restore.outputs.cache-hit }}" == "true" ]; then
+                echo "Tag $ACTUAL_UPSTREAM_TAG was processed before, but this is a forced run or manual dispatch."
+            else
+                echo "New tag $ACTUAL_UPSTREAM_TAG or cache miss."
+            fi
+            echo "Proceeding with sync and build."
+            echo "should_run_build=true" >> $GITHUB_OUTPUT
+            echo "$ACTUAL_UPSTREAM_TAG" > .last_processed_tag_value
+          fi
+
+      - name: Save processed tag to cache (if build happened)
+        if: steps.check_if_new.outputs.should_run_build == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .last_processed_tag_value
+          key: last-processed-immich-tag-${{ steps.determine_tag.outputs.tag_to_process }}
 
       - name: Checkout upstream immich-app/immich release code
         if: steps.check_if_new.outputs.should_run_build == 'true'
@@ -44,27 +109,23 @@ jobs:
           ref: ${{ steps.determine_tag.outputs.tag_to_process }}
           path: upstream_source # Checks out to $GITHUB_WORKSPACE/upstream_source
 
-      # REMOVE the old "Configure Git for pushing" and "Push code" steps.
-      # REPLACE them with the new comprehensive sync and push step:
-
       - name: Sync to Target Branch (Excluding Upstream .github/workflows)
         if: steps.check_if_new.outputs.should_run_build == 'true'
         env:
           TARGET_BRANCH: dockerimageML
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Using GITHUB_TOKEN for the push
           UPSTREAM_TAG: ${{ steps.determine_tag.outputs.tag_to_process }}
-          UPSTREAM_SOURCE_PATH: ${{ github.workspace }}/upstream_source # Absolute path to upstream checkout
+          UPSTREAM_SOURCE_PATH: ${{ github.workspace }}/upstream_source
         run: |
           set -e # Exit immediately if a command exits with a non-zero status.
 
           MY_REPO_URL="https://x-access-token:$GH_TOKEN@github.com/${{ github.repository }}.git"
           TARGET_WORKDIR_NAME="target_repo_for_sync"
-          TARGET_WORKDIR_PATH="${{ github.workspace }}/$TARGET_WORKDIR_NAME" # Absolute path for the target repo clone
+          TARGET_WORKDIR_PATH="${{ github.workspace }}/$TARGET_WORKDIR_NAME"
 
           echo "Preparing target directory $TARGET_WORKDIR_PATH for branch $TARGET_BRANCH"
-          rm -rf "$TARGET_WORKDIR_PATH" # Clean up from any previous run
+          rm -rf "$TARGET_WORKDIR_PATH"
 
-          # Clone the target branch from your repository, or initialize it if it doesn't exist
           if git ls-remote --exit-code --heads "$MY_REPO_URL" "refs/heads/$TARGET_BRANCH"; then
             echo "Cloning existing branch $TARGET_BRANCH from $MY_REPO_URL..."
             git clone --depth 1 --branch "$TARGET_BRANCH" "$MY_REPO_URL" "$TARGET_WORKDIR_PATH"
@@ -72,65 +133,51 @@ jobs:
             echo "Branch $TARGET_BRANCH not found in $MY_REPO_URL. Initializing it locally."
             mkdir -p "$TARGET_WORKDIR_PATH"
             cd "$TARGET_WORKDIR_PATH"
-            git init
-            git checkout -b "$TARGET_BRANCH" # Create the branch
-            # An initial commit might be needed if the branch is truly new and sync results in no files
+            git init -b "$TARGET_BRANCH" # Use -b to set the branch name during init
+            # No initial commit here; will be done after sync if needed
             cd "${{ github.workspace }}" # Return to GITHUB_WORKSPACE
           fi
           
-          cd "$TARGET_WORKDIR_PATH" # Navigate into the cloned/initialized target directory
+          cd "$TARGET_WORKDIR_PATH"
           git config user.name "GitHub Actions Bot (Immich Sync)"
           git config user.email "actions-bot@users.noreply.github.com"
 
-          # Preserve the current .github/workflows directory from the target branch (if it exists)
-          TEMP_WORKFLOWS_BACKUP_DIR=$(mktemp -d) # Create a unique temporary directory for the backup
-          TARGET_BRANCH_DOT_GITHUB_WORKFLOWS_PATH=".github/workflows" # Relative path within $TARGET_WORKDIR_PATH
+          TEMP_WORKFLOWS_BACKUP_DIR=$(mktemp -d)
+          TARGET_BRANCH_DOT_GITHUB_WORKFLOWS_PATH=".github/workflows"
 
           if [ -d "$TARGET_BRANCH_DOT_GITHUB_WORKFLOWS_PATH" ]; then
             echo "Preserving existing '$TARGET_BRANCH_DOT_GITHUB_WORKFLOWS_PATH' from branch '$TARGET_BRANCH'..."
-            # Move the 'workflows' directory itself into the temp backup dir
             mv "$TARGET_BRANCH_DOT_GITHUB_WORKFLOWS_PATH" "$TEMP_WORKFLOWS_BACKUP_DIR/workflows"
             echo "Preserved to $TEMP_WORKFLOWS_BACKUP_DIR/workflows"
           else
             echo "No '$TARGET_BRANCH_DOT_GITHUB_WORKFLOWS_PATH' found in branch '$TARGET_BRANCH' to preserve."
           fi
           
-          # Use rsync to copy from upstream_source to the current directory (TARGET_WORKDIR_PATH)
-          # Source path: $UPSTREAM_SOURCE_PATH/ (trailing slash means copy contents)
-          # Destination: . (current directory, i.e., $TARGET_WORKDIR_PATH)
-          # --delete: remove files in destination that are not in source
-          # --exclude '.git/': don't copy .git from source (upstream_source is a checkout, so it has one)
-          # --exclude '.github/workflows/': don't copy this specific directory from source
           echo "Syncing content from $UPSTREAM_SOURCE_PATH (tag $UPSTREAM_TAG), excluding its .github/workflows/ ..."
           rsync -a --delete \
                 --exclude '.git/' \
                 --exclude '.github/workflows/' \
-                "$UPSTREAM_SOURCE_PATH/" . # Target is current dir ($TARGET_WORKDIR_PATH)
+                "$UPSTREAM_SOURCE_PATH/" .
 
-          # Restore the preserved .github/workflows (if any)
           if [ -d "$TEMP_WORKFLOWS_BACKUP_DIR/workflows" ]; then
             echo "Restoring preserved .github/workflows..."
-            # Ensure .github directory exists before moving workflows into it (rsync might have deleted .github if it was empty upstream)
-            mkdir -p ".github"
+            mkdir -p ".github" # Ensure .github directory exists
             mv "$TEMP_WORKFLOWS_BACKUP_DIR/workflows" ".github/workflows"
             echo "Restored to .github/workflows"
           fi
-          rm -rf "$TEMP_WORKFLOWS_BACKUP_DIR" # Clean up the temporary backup directory
+          rm -rf "$TEMP_WORKFLOWS_BACKUP_DIR"
 
-          # Add, commit, and push changes
           echo "Staging changes..."
           git add -A .
 
           if git diff --staged --quiet; then
-            echo "No effective content changes to commit after syncing with upstream $UPSTREAM_TAG (workflows handled)."
-            # If the branch was newly created locally and is still empty after sync,
-            # we might need an initial commit to establish it on the remote.
+            echo "No effective content changes to commit after syncing with upstream $UPSTREAM_TAG (target .github/workflows preserved)."
+            # If the branch was newly created locally and is still empty after sync, and not on remote, push it.
             if ! git ls-remote --exit-code --heads "$MY_REPO_URL" "refs/heads/$TARGET_BRANCH"; then
-              if git rev-parse --verify --quiet "refs/heads/$TARGET_BRANCH"; then # Check if local branch exists
+              if git rev-parse --verify --quiet "refs/heads/$TARGET_BRANCH"; then 
                 echo "Branch $TARGET_BRANCH is new on remote. Pushing current state."
-                # If HEAD has no commits (e.g. new branch, sync resulted in no files) make an empty one.
-                if ! git rev-parse --verify --quiet HEAD^{commit} 2>/dev/null; then
-                    git commit --allow-empty -m "Establish $TARGET_BRANCH (synced from $UPSTREAM_TAG, workflows excluded)"
+                if ! git rev-parse --verify --quiet HEAD^{commit} 2>/dev/null; then # If no commits exist
+                    git commit --allow-empty -m "Establish $TARGET_BRANCH (synced from $UPSTREAM_TAG, target .github/workflows preserved)"
                 fi
                 git push "$MY_REPO_URL" HEAD:"refs/heads/$TARGET_BRANCH" --force
                 echo "Pushed new branch $TARGET_BRANCH to remote."
@@ -151,20 +198,14 @@ Workflow sync strategy: Target branch .github/workflows preserved. Upstream .git
             echo "Push to $TARGET_BRANCH complete."
           fi
           
-          cd "${{ github.workspace }}" # IMPORTANT: Go back to original GITHUB_WORKSPACE
+          cd "${{ github.workspace }}" # Return to original GITHUB_WORKSPACE
 
-          
   # --- Docker Build Jobs ---
-  # These jobs will run only if the sync_and_build job determined it should run.
-  # They will checkout the freshly updated dockerimageML branch from aviv926/immich.
-
-build-server:
+  build-server:
     needs: sync_and_build
     if: needs.sync_and_build.outputs.should_run_build == 'true'
     runs-on: ubuntu-latest
-    permissions: # These permissions are for GITHUB_TOKEN
-      contents: read    # To checkout code from aviv926/immich
-      packages: write   # To push to GHCR using GITHUB_TOKEN
+    # Inherits permissions (contents:read, packages:write) from workflow level
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@17d0e2bd7d51742c71671bd19fa12bdc9d40a3d6 # v2.8.1
@@ -174,9 +215,8 @@ build-server:
       - name: Checkout aviv926/immich@dockerimageML
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository }} # This repository (aviv926/immich)
-          ref: dockerimageML        # The branch we just pushed to
-          # token: ${{ secrets.GITHUB_TOKEN }} # Default, uses GITHUB_TOKEN with 'contents: read'
+          repository: ${{ github.repository }}
+          ref: dockerimageML
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -186,7 +226,7 @@ build-server:
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }} # Use GITHUB_TOKEN for GHCR
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push server image
         uses: docker/build-push-action@v6
@@ -203,9 +243,7 @@ build-server:
     needs: sync_and_build
     if: needs.sync_and_build.outputs.should_run_build == 'true'
     runs-on: ubuntu-latest
-    permissions: # These permissions are for GITHUB_TOKEN
-      contents: read
-      packages: write
+    # Inherits permissions (contents:read, packages:write) from workflow level
     strategy:
       matrix:
         include:
@@ -214,7 +252,7 @@ build-server:
             dockerfile: machine-learning/Dockerfile
           - device: cuda
             suffix: "-cuda"
-            dockerfile: machine-learning/Dockerfile
+            dockerfile: machine-learning/Dockerfile # Assuming same Dockerfile handles DEVICE arg
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@17d0e2bd7d51742c71671bd19fa12bdc9d40a3d6 # v2.8.1
@@ -226,7 +264,6 @@ build-server:
         with:
           repository: ${{ github.repository }}
           ref: dockerimageML
-          # token: ${{ secrets.GITHUB_TOKEN }} # Default
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -241,8 +278,8 @@ build-server:
       - name: Build and push ML image (${{ matrix.device }})
         uses: docker/build-push-action@v6
         with:
-          context: machine-learning
-          file: ${{ matrix.dockerfile }}
+          context: machine-learning # Context should be where Dockerfile is
+          file: ${{ matrix.dockerfile }} # Path relative to context
           platforms: linux/amd64
           push: true
           build-args: |
