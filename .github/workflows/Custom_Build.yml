@@ -1,4 +1,4 @@
-name: Sync Immich Upstream Release and Build Images
+name: Sync Immich Upstream Release and Build ML Images
 
 on:
   schedule:
@@ -240,7 +240,7 @@ Workflow sync strategy: Target branch .github/workflows preserved. Upstream .git
           cache-to: type=gha,mode=max
 
   build-ml:
-    needs: sync_and_build
+    needs: [sync_and_build, build-server]
     if: needs.sync_and_build.outputs.should_run_build == 'true'
     runs-on: ubuntu-latest
     # Inherits permissions (contents:read, packages:write) from workflow level
