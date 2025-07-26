@@ -88,7 +88,6 @@ export type UserLicense = {
     licenseKey: string;
 };
 export type UserAdminResponseDto = {
-    appVersion?: string | null;
     avatarColor: UserAvatarColor;
     createdAt: string;
     deletedAt: string | null;
