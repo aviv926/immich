@@ -15957,11 +15957,6 @@
       },
       "UserAdminResponseDto": {
         "properties": {
-          "appVersion": {
-            "description": "Latest app version from mobile app User-Agent header",
-            "nullable": true,
-            "type": "string"
-          },
           "avatarColor": {
             "allOf": [
               {

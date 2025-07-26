@@ -23,7 +23,6 @@ export type AuthUser = {
   email: string;
   quotaUsageInBytes: number;
   quotaSizeInBytes: number | null;
-  appVersion?: string | null;
 };
 
 export type AlbumUser = {

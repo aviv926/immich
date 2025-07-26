@@ -166,13 +166,9 @@ export class UserAdminResponseDto extends UserResponseDto {
   @ValidateEnum({ enum: UserStatus, name: 'UserStatus' })
   status!: string;
   license!: UserLicense | null;
-  @ApiProperty({ type: 'string', required: false, description: 'Latest app version from mobile app User-Agent header' })
-  appVersion?: string | null;
 }
 
-type UserAdminWithAppVersion = UserAdmin & { appVersion?: string | null };
-
-export function mapUserAdmin(entity: UserAdminWithAppVersion): UserAdminResponseDto {
+export function mapUserAdmin(entity: UserAdmin): UserAdminResponseDto {
   const metadata = entity.metadata || [];
   const license = metadata.find(
     (item): item is UserMetadataItem<UserMetadataKey.License> => item.key === UserMetadataKey.License,
@@ -190,6 +186,5 @@ export function mapUserAdmin(entity: UserAdminWithAppVersion): UserAdminResponse
     quotaUsageInBytes: entity.quotaUsageInBytes,
     status: entity.status,
     license: license ? { ...license, activatedAt: new Date(license?.activatedAt) } : null,
-    appVersion: (entity as any).appVersion ?? null,
   };
 }

@@ -28,13 +28,11 @@ export class AuthController {
 
   @Post('login')
   async login(
-    @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
     @Body() loginCredential: LoginCredentialDto,
     @GetLoginDetails() loginDetails: LoginDetails,
   ): Promise<LoginResponseDto> {
-    const userAgent = req.headers['user-agent'] as string | undefined;
-    const body = await this.service.login(loginCredential, loginDetails, userAgent);
+    const body = await this.service.login(loginCredential, loginDetails);
     return respondWithCookie(res, body, {
       isSecure: loginDetails.isSecure,
       values: [
