@@ -39,6 +39,7 @@
     mdiChartPie,
     mdiChartPieOutline,
     mdiCheckCircle,
+    mdiCloudUpload,
     mdiDeleteRestore,
     mdiFeatureSearchOutline,
     mdiLockSmart,
@@ -47,6 +48,7 @@
     mdiPlayCircle,
     mdiTrashCanOutline,
   } from '@mdi/js';
+  import { DateTime } from 'luxon';
   import { t } from 'svelte-i18n';
   import type { PageData } from './$types';
 
@@ -68,6 +70,14 @@
   let usedPercentage = $derived(Math.min(Math.round((usedBytes / availableBytes) * 100), 100));
   let canResetPassword = $derived($authUser.id !== user.id);
   let newPassword = $state<string>('');
+
+  let lastUploadText = $derived.by(() => {
+    if (!user.lastAssetUploadedAt) {
+      return $t('never_uploaded');
+    }
+
+    return DateTime.fromISO(user.lastAssetUploadedAt).toRelative({ locale: $locale }) ?? $t('unknown_time');
+  });
 
   let editedLocale = $derived(findLocale($locale).code);
   let createAtDate: Date = $derived(new Date(user.createdAt));
@@ -345,6 +355,11 @@
                 </div>
               </div>
             {/if}
+            <div class="px-4 pb-4 flex items-center gap-1">
+              <Icon icon={mdiCloudUpload} size="1.25rem" class="text-primary" />
+              <Heading tag="h3" size="tiny">{$t('last_upload')}</Heading>
+              <Text>{lastUploadText}</Text>
+            </div>
           </CardBody>
         </Card>
         <Card color="secondary">
